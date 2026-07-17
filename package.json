@@ -1,0 +1,9 @@
+{
+  "name": "kotobase-query",
+  "private": true,
+  "description": "kotobase-query bridge -- transitive npm deps of kotoba-lang/arrangement (materialize target) needed to load arrangement.core under nbb.",
+  "dependencies": {
+    "@noble/hashes": "^1.4.0",
+    "hashes": "2.0.1"
+  }
+}

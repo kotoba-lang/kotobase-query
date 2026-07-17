@@ -1,0 +1,53 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  nbb-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/kotobase
+          # Same pin as deps.edn — keep the two in lockstep.
+          ref: bbf57df9dde5c1869182012860129a598382e088
+          path: .deps/kotobase
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/arrangement
+          # Same pin as deps.edn — keep the two in lockstep.
+          ref: 591ade4db1b324fc4ec83de932888b141bd69e09
+          path: .deps/arrangement
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/prolly-tree
+          # Same pin as arrangement's own deps.edn (transitive).
+          ref: 2a5ba48a2eb11cc73b549ee75f5c1b71cc223566
+          path: .deps/prolly-tree
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/io-ipld
+          # Same pin as arrangement's own deps.edn (transitive).
+          ref: 4591764514239c4777f227a7a56d46c901e2a4a0
+          path: .deps/io-ipld
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/io-multiformats
+          # Same pin as io-ipld's own deps.edn (transitive).
+          ref: eec3ee85c458ea830be94518b9a42f4a8f1aee40
+          path: .deps/io-multiformats
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/org-ietf-cbor
+          # Same pin as io-ipld's own deps.edn (transitive).
+          ref: de18ad29102f9df150e214d756de4719c3c00d7a
+          path: .deps/org-ietf-cbor
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global nbb
+      - run: npm install
+      - run: nbb --classpath "src:test:.deps/kotobase/src:.deps/arrangement/src:.deps/prolly-tree/src:.deps/io-ipld/src:.deps/io-multiformats/src:.deps/org-ietf-cbor/src" bin/run_tests.cljs

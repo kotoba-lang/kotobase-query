@@ -1,0 +1,39 @@
+{:paths ["src"]
+ ;; kotobase (kotoba-lang/kotobase) provides the IStore/ITransactionalStore
+ ;; seam (kotobase.store) this bridge materializes FROM. arrangement
+ ;; (kotoba-lang/arrangement) provides the 4-covering triple index
+ ;; (arrangement.core) this bridge materializes INTO, and the real
+ ;; Datomic-shaped Datalog engine (arrangement.datalog) that runs queries
+ ;; over it -- this repo is a thin bridge between the two, not a
+ ;; reimplementation of either. `kqe` (named in ADR-2607172300's dependency
+ ;; table) is NOT a direct dep: it is retired upstream, merged into
+ ;; `arrangement` as `arrangement.query`/`arrangement.datalog` -- see the
+ ;; ns docstring in `src/kotobase/query/bridge.cljc`.
+ ;;
+ ;; `arrangement`'s own deps.edn pulls in prolly-tree/io-ipld (its
+ ;; commit!/CID-snapshot machinery, unused by this bridge but required at
+ ;; namespace-load time) which in turn pull in io-multiformats/org-ietf-cbor
+ ;; -- tools.deps resolves that whole chain transitively from the two
+ ;; direct deps below for the JVM :test alias. The nbb primary test path
+ ;; has no dependency resolver, so `bin/run_tests.cljs` / CI clone each of
+ ;; those transitive deps into their own `.deps/<name>` and list every
+ ;; src dir on --classpath by hand -- see the README's Develop/test section
+ ;; for the exact command.
+ :deps {io.github.kotoba-lang/kotobase
+        {:git/sha "bbf57df9dde5c1869182012860129a598382e088"}
+        io.github.kotoba-lang/arrangement
+        {:git/sha "591ade4db1b324fc4ec83de932888b141bd69e09"}}
+ ;; First-class runtime is nbb/cljs (repo-wide runtime priority):
+ ;;   nbb --classpath "src:test:.deps/kotobase/src:.deps/arrangement/src:.deps/prolly-tree/src:.deps/io-ipld/src:.deps/io-multiformats/src:.deps/org-ietf-cbor/src" bin/run_tests.cljs
+ ;; The :test alias below is the :clj COMPAT suite only -- not the
+ ;; primary execution path.
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts ["-m" "cognitect.test-runner"]
+         :exec-fn cognitect.test-runner.api/test}
+       ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
+       :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
+         :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
+                     "--fail-level" "error"]}}}
