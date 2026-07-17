@@ -1,9 +1,8 @@
 {
   "name": "kotobase-query",
   "private": true,
-  "description": "kotobase-query bridge -- transitive npm deps of kotoba-lang/arrangement (materialize target) needed to load arrangement.core under nbb.",
+  "description": "kotobase-query bridge -- transitive npm dep of kotoba-lang/arrangement (materialize target, via multiformats.core's @noble/hashes/sha2.js use) needed to load arrangement.core under nbb. NOTE: io-multiformats' own package.json also declares a \"hashes\": \"2.0.1\" dependency, but nothing in its source actually requires the npm \"hashes\" package (only \"@noble/hashes/sha2.js\") and no matching npm registry version exists -- that entry is vestigial/broken upstream and deliberately NOT mirrored here.",
   "dependencies": {
-    "@noble/hashes": "^1.4.0",
-    "hashes": "2.0.1"
+    "@noble/hashes": "^1.4.0"
   }
 }

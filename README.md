@@ -145,11 +145,15 @@ retired") and `arrangement`'s own README / ADR-2607050700 for the merge.
   the JVM `:test` alias via `tools.deps`; the nbb primary test path has no
   dependency resolver, so `bin/run_tests.cljs`/CI clone every transitive
   dep by hand — see Develop/test below.
-- npm `@noble/hashes` and `hashes` — transitive JS-runtime deps of
-  `arrangement`/`prolly-tree`/`io-ipld`/`io-multiformats` (their hashing
-  primitives use different platform code paths per `.cljc`
-  reader-conditional; nbb/cljs needs the JS libs, the JVM `:test` alias
-  does not).
+- npm `@noble/hashes` — transitive JS-runtime dep of `io-multiformats`
+  (`multiformats.core` requires `@noble/hashes/sha2.js` under `:cljs`; the
+  JVM `:test` alias uses `java.security.MessageDigest` instead and needs
+  no npm package). `io-multiformats`'s own `package.json` also lists a
+  `"hashes": "2.0.1"` dependency, but nothing in its source actually
+  requires the npm `hashes` package and no matching registry version
+  exists (`npm install` 404s on it) — that entry is vestigial/broken
+  upstream and deliberately **not** mirrored in this repo's
+  `package.json`.
 
 ## Develop / test
 
