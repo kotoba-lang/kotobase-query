@@ -22,7 +22,7 @@
  :deps {io.github.kotoba-lang/kotobase
         {:git/sha "bbf57df9dde5c1869182012860129a598382e088"}
         io.github.kotoba-lang/arrangement
-        {:git/sha "591ade4db1b324fc4ec83de932888b141bd69e09"}}
+        {:git/sha "9e90426430bb4eb6206112a74465a4f9d62fe0c8"}}
  ;; First-class runtime is nbb/cljs (repo-wide runtime priority):
  ;;   nbb --classpath "src:test:.deps/kotobase/src:.deps/arrangement/src:.deps/prolly-tree/src:.deps/io-ipld/src:.deps/io-multiformats/src:.deps/org-ietf-cbor/src" bin/run_tests.cljs
  ;; The :test alias below is the :clj COMPAT suite only -- not the
