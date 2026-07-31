@@ -148,3 +148,58 @@
         result (bridge/q db '{:find [?name] :in [?role] :where [[?u :role ?role] [?u :name ?name]]}
                           everything ["admin"])]
     (is (= #{["Alice"] ["Carol"]} result))))
+
+;; --- content-addressed memo (ADR-2607310900) -------------------------------
+
+(defn- seeded [n]
+  (let [s (local/local-store)]
+    (dotimes [i n] (st/-put s "users" (str "u" i) {:name (str "n" i)}))
+    s))
+
+(deftest memo-returns-the-same-db-for-the-same-version
+  (let [m (bridge/memo) s (seeded 5)
+        a (bridge/materialize-memo m s ["users"] "cid-A")
+        b (bridge/materialize-memo m s ["users"] "cid-A")]
+    (is (identical? a b) "second call is the memoised value, not an equal rebuild")
+    (is (= {:size 1 :hits 1 :misses 1} (select-keys (bridge/memo-stats m) [:size :hits :misses])))))
+
+(deftest a-different-version-is-a-different-key-not-a-dirty-entry
+  (testing "this is the whole reason the key is a content address: a changed
+            graph does not invalidate anything, it simply misses"
+    (let [m (bridge/memo) s (seeded 3)
+          a (bridge/materialize-memo m s ["users"] "cid-A")]
+      (st/-put s "users" "u9" {:name "new"})
+      (let [b (bridge/materialize-memo m s ["users"] "cid-B")]
+        (is (not (identical? a b)))
+        (is (= 4 (count (:spo b))) "the new version sees the write")
+        (is (= 3 (count (:spo a))) "and the old value is still the old snapshot")))))
+
+(deftest coll-keys-are-part-of-the-key-and-order-insensitive
+  (let [m (bridge/memo) s (seeded 2)]
+    (bridge/materialize-memo m s ["users"] "v1")
+    (bridge/materialize-memo m s ["users" "other"] "v1")
+    (is (= 2 (:size (bridge/memo-stats m))) "different collection sets are different entries")
+    (let [a (bridge/materialize-memo m s ["users" "other"] "v1")
+          b (bridge/materialize-memo m s ["other" "users"] "v1")]
+      (is (identical? a b) "asking for the same collections in another order is the same question"))))
+
+(deftest a-nil-version-is-refused-rather-than-cached-forever
+  (testing "defaulting the version would turn this into a cache that never
+            invalidates, which is not a cache but a bug returning stale data"
+    (is (thrown? #?(:clj AssertionError :cljs js/Error)
+                 (bridge/materialize-memo (bridge/memo) (seeded 1) ["users"] nil)))))
+
+(deftest the-memo-is-bounded
+  (let [m (bridge/memo 2) s (seeded 1)]
+    (doseq [v ["v1" "v2" "v3"]] (bridge/materialize-memo m s ["users"] v))
+    (is (= 2 (:size (bridge/memo-stats m))) "capacity is enforced, not aspirational")
+    (bridge/materialize-memo m s ["users"] "v1")
+    (is (= 4 (:misses (bridge/memo-stats m)))
+        "three inserts plus the re-fetch of the evicted v1")))
+
+(deftest materialize-must-never-take-visible
+  (testing "the memo is sound ONLY because materialize is visible?-free — one
+            db is correct for every caller. If this arity ever grows a
+            predicate argument, sharing a db across principals stops being safe
+            and this namespace has to be reconsidered, not patched"
+    (is (= 2 (apply max (map count (:arglists (meta #'bridge/materialize))))))))
