@@ -217,3 +217,49 @@
             b (bridge/db-for {:query-memo m :query-version "v1"} s ["users"])]
         (is (identical? a b))
         (is (= 1 (:hits (bridge/memo-stats m))))))))
+
+;; --- string document keys ---------------------------------------------------
+;; Found in production 2026-07-31: every SPARQL query against kotobase.net
+;; returned "internal error: Doesn't support namespace: v2", whatever the query
+;; said, while /health answered 200 throughout. The cause was here — documents
+;; parsed out of JSON bodies (kotobase.protocols.atproto stores the record
+;; verbatim) have STRING keys, and this bridge passed them through as datom
+;; attributes. SPARQL's kw->iri-string calls `namespace`, which throws on a
+;; string in ClojureScript; Cypher's :text never matched "text" and returned
+;; empty. Every test in this repo used keyword keys, so nothing saw it.
+
+(deftest string-doc-keys-become-keyword-attributes
+  (let [s (local/local-store)]
+    (st/-put s "c" "k" {"text" "hello" "v2" 1})
+    (let [db (bridge/materialize s ["c"])
+          attrs (into #{} (for [[_ pm] (:spo db) [p _] pm] p))]
+      (is (contains? attrs :text))
+      (is (contains? attrs :v2))
+      (is (every? keyword? attrs)
+          "a datom attribute must have one type, whatever the document used"))))
+
+(deftest string-and-keyword-keys-materialize-alike
+  (let [a (local/local-store) b (local/local-store)]
+    (st/-put a "c" "k" {"name" "Alice" "role" "admin"})
+    (st/-put b "c" "k" {:name "Alice" :role "admin"})
+    (is (= (:spo (bridge/materialize a ["c"]))
+           (:spo (bridge/materialize b ["c"]))))))
+
+(deftest a-string-keyed-doc-is-queryable
+  (let [s (local/local-store)]
+    (st/-put s "users" "u1" {"name" "Alice" "role" "admin"})
+    (st/-put s "users" "u2" {"name" "Bob" "role" "user"})
+    (is (= #{["Alice"]}
+           (bridge/q (bridge/materialize s ["users"])
+                     '{:find [?n] :where [[?e :role "admin"] [?e :name ?n]]}
+                     (constantly true))))))
+
+(deftest a-slashed-string-key-round-trips
+  ;; (keyword "a/b") splits on the slash; the IRI and Cypher forms both render
+  ;; it back as a/b, so the split is not a loss.
+  (let [s (local/local-store)]
+    (st/-put s "c" "k" {"a/b" 1})
+    (let [attrs (into #{} (for [[_ pm] (:spo (bridge/materialize s ["c"])) [p _] pm] p))]
+      (is (contains? attrs :a/b))
+      (is (= "a" (namespace :a/b)))
+      (is (= "b" (name :a/b))))))
