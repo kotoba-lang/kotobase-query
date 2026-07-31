@@ -149,6 +149,95 @@
    (arr/empty-db)
    coll-keys))
 
+
+;; ------------------------------------------------------------------- memo
+;; ADR-2607310900. This is a MEMO, not a cache: the key is a content address,
+;; so a changed graph is a different key rather than a dirty entry and there is
+;; no invalidation path to get wrong.
+;;
+;; Two properties make it safe, and both are properties of `materialize` above
+;; rather than of anything here:
+;;
+;;   1. `materialize` takes no `visible?`. The predicate is applied by `q`, over
+;;      an already-built db. So ONE materialized db is correct for every caller
+;;      regardless of what any of them may see, and sharing it across principals
+;;      is safe by construction. If `materialize` ever grows a `visible?`
+;;      argument this whole namespace becomes unsound -- there is a test that
+;;      says so out loud.
+;;   2. The db is a value. Nothing handed out of here can be mutated by a
+;;      caller into something the next caller sees.
+;;
+;; What is deliberately NOT memoised: the ANSWER. A result memo would need
+;; `visible?` in its key, `visible?` is a function, and keying on one is how a
+;; principal ends up reading another principal's rows.
+
+(defn- lru-put
+  "`m` with `k`->`v`, evicting the oldest insertion past `cap`. Insertion order
+  is tracked explicitly rather than by relying on map ordering, which neither
+  host promises above a handful of entries."
+  [{:keys [entries order] :as m} k v cap]
+  (let [order (conj (vec (remove #(= k %) order)) k)
+        entries (assoc entries k v)
+        excess (- (count order) cap)]
+    (if (pos? excess)
+      ;; assoc onto `m`, never build a fresh map: the eviction branch used to
+      ;; return {:entries :order} and silently dropped :capacity/:hits/:misses,
+      ;; so the call after the first eviction read a nil capacity. Caught by
+      ;; the bounded-memo test, which is why that test exercises three
+      ;; insertions into a capacity of two rather than stopping at the edge.
+      (assoc m
+             :entries (apply dissoc entries (take excess order))
+             :order (vec (drop excess order)))
+      (assoc m :entries entries :order order))))
+
+(def default-memo-capacity
+  "Materialized dbs to keep. Small on purpose: each one holds every datom of
+  every collection it covers, so this is the knob that decides how much memory
+  a query surface uses, and a large default would hide that."
+  8)
+
+(defn memo
+  "A memo store for `materialize-memo`. Callers own it, so a test can hold one
+  and a Worker can hold one per isolate without either reaching the other."
+  ([] (memo default-memo-capacity))
+  ([capacity]
+   (assert (pos? capacity) "a capacity of zero would memoise nothing and still allocate")
+   (atom {:entries {} :order [] :capacity capacity :hits 0 :misses 0})))
+
+(defn materialize-memo
+  "`materialize`, memoised on `version` -- a CONTENT ADDRESS for the state of
+  `store` (the chain-head CID, in `kotobase-protocols-worker`'s case).
+
+  `version` is REQUIRED and must not be nil. A caller with no content address
+  has nothing that makes a cached db provably current, and defaulting it would
+  turn this into a cache that never invalidates -- which is not a cache, it is
+  a bug that returns yesterday's data. Such a caller should call `materialize`
+  directly and pay for it.
+
+  `version` must change whenever ANY document in `coll-keys` changes. A
+  revision counter is not automatically good enough: a counter is unique only
+  along one line of writes, and a content-addressed chain can fork such that
+  two forks reach the same counter with different contents (ADR-2607310900)."
+  [memo-atom store coll-keys version]
+  (assert (some? version)
+          "materialize-memo requires a non-nil version (a content address); use materialize when you have none")
+  (let [k [version (vec (sort (map str coll-keys)))]
+        cached (get-in @memo-atom [:entries k])]
+    (if cached
+      (do (swap! memo-atom update :hits inc) cached)
+      (let [db (materialize store coll-keys)]
+        (swap! memo-atom (fn [m] (-> (lru-put m k db (:capacity m))
+                                     (update :misses inc))))
+        db))))
+
+(defn memo-stats
+  "`{:size :capacity :hits :misses}` -- so a deploy can report whether the memo
+  is earning its memory instead of assuming it."
+  [memo-atom]
+  (let [m @memo-atom]
+    {:size (count (:entries m)) :capacity (:capacity m)
+     :hits (:hits m) :misses (:misses m)}))
+
 ;; --------------------------------------------------------------------- query
 
 (defn q

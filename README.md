@@ -24,6 +24,42 @@ reimplementation. `arrangement.datalog` does all the actual query
 evaluation; this repo only materializes `IStore` docs as datoms and hands
 them to it.
 
+## Memoising it — `materialize-memo` (ADR-2607310900)
+
+The linear scan below is still what `materialize` does. What changed is that a
+caller holding a **content address** for the store's state no longer has to pay
+for it twice:
+
+```clojure
+(def m (bridge/memo))                                   ; caller owns it
+(bridge/materialize-memo m store ["users"] chain-cid)   ; version is REQUIRED
+(bridge/memo-stats m)                                   ; {:size :capacity :hits :misses}
+```
+
+This is a **memo, not a cache**: the key is a content address, so a changed
+graph is a *different key* rather than a dirty entry, and there is no
+invalidation path to get wrong.
+
+Two properties make sharing one db across callers safe, and both belong to
+`materialize` rather than to the memo:
+
+1. **`materialize` takes no `visible?`.** The predicate is applied by `q`, over
+   an already-built db — so one db is correct for every caller regardless of
+   what any of them may see. There is a test asserting `materialize`'s arity
+   never grows, because if it did, this stops being sound.
+2. **The db is a value**, so nothing handed out can be mutated into something
+   the next caller sees.
+
+**The answer is never memoised** — only the index. A result memo would need
+`visible?` in its key, and keying on a function is how one principal ends up
+reading another's rows.
+
+`version` is required and must not be nil: a caller with no content address has
+nothing that makes a cached db provably current, and defaulting it would
+produce a cache that never invalidates. A revision *counter* is not
+automatically sufficient either — a counter is unique only along one line of
+writes, and a chain can fork.
+
 ## ⚠️ v0.1 limitation: linear materialization (read this before depending on it)
 
 `materialize` does a **full `-list` + `-get` scan of every requested
