@@ -31,7 +31,7 @@ jobs:
         with:
           repository: kotoba-lang/io-ipld
           # Same pin as arrangement's own deps.edn (transitive).
-          ref: 4591764514239c4777f227a7a56d46c901e2a4a0
+          ref: e08dc3b2ab705be292e388cd1ad136381544a041
           path: .deps/io-ipld
       - uses: actions/checkout@v4
         with:
