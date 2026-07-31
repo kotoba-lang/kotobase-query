@@ -203,3 +203,17 @@
             predicate argument, sharing a db across principals stops being safe
             and this namespace has to be reconsidered, not patched"
     (is (= 2 (apply max (map count (:arglists (meta #'bridge/materialize))))))))
+
+(deftest db-for-needs-both-halves-or-it-builds-fresh
+  (testing "a memo with no version has nothing to key on, and a version with no
+            memo has nowhere to put the result — neither half alone may silently
+            behave as if memoised"
+    (let [m (bridge/memo) s (seeded 2)]
+      (bridge/db-for {} s ["users"])
+      (bridge/db-for {:query-memo m} s ["users"])
+      (bridge/db-for {:query-version "v1"} s ["users"])
+      (is (= 0 (:size (bridge/memo-stats m))) "nothing was memoised")
+      (let [a (bridge/db-for {:query-memo m :query-version "v1"} s ["users"])
+            b (bridge/db-for {:query-memo m :query-version "v1"} s ["users"])]
+        (is (identical? a b))
+        (is (= 1 (:hits (bridge/memo-stats m))))))))
