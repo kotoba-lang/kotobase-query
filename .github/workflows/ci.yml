@@ -19,7 +19,7 @@ jobs:
         with:
           repository: kotoba-lang/arrangement
           # Same pin as deps.edn — keep the two in lockstep.
-          ref: 591ade4db1b324fc4ec83de932888b141bd69e09
+          ref: 9e90426430bb4eb6206112a74465a4f9d62fe0c8
           path: .deps/arrangement
       - uses: actions/checkout@v4
         with:
