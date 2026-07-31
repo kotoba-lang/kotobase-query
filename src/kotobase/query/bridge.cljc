@@ -103,6 +103,34 @@
 
 ;; ---------------------------------------------------------------- materialize
 
+(defn- ->attr
+  "A document key -> the datom attribute for it.
+
+  Documents arrive with BOTH key types and this is not a corner case:
+  `kotobase.protocols.atproto` stores the record it parsed out of a JSON
+  body verbatim, so its keys are strings, while every document written from
+  Clojure (and every test in this repo) has keyword keys. Left alone, the
+  same field is two different attributes depending on how it was written.
+
+  That broke both query surfaces at once, in the two worst ways available:
+
+    - SPARQL 500s. `kotobase.protocols.sparql.quads/kw->iri-string` calls
+      `namespace`, which in ClojureScript throws `Doesn't support namespace:
+      <x>` on a string. Every SPARQL query against such a graph failed,
+      whatever the query said. Found in production 2026-07-31, where the
+      surface had been answering 200 on /health the whole time.
+    - Cypher silently returns nothing. `n.text` translates to the keyword
+      `:text`, which never matches the string attribute `\"text\"`, so the
+      answer is an empty result set rather than an error.
+
+  Normalising here rather than in each surface is what makes those two
+  agree: the bridge is where a document becomes datoms, and a datom
+  attribute should have one type. `(keyword \"a/b\")` splits on the slash
+  into `:a/b`, which is what the IRI form and the Cypher form both already
+  render as `a/b`, so the round trip holds."
+  [k]
+  (if (string? k) (keyword k) k))
+
 (defn- doc->datoms
   "One document `doc` (as read from `[coll k]`) -> a seq of `{:s :p :o}`
   datoms for entity `entity`. See the ns docstring's \"Doc -> datoms
@@ -113,9 +141,10 @@
   (if (map? doc)
     (into []
           (mapcat (fn [[attr v]]
-                    (if (and (coll? v) (not (map? v)))
-                      (map (fn [el] {:s entity :p attr :o el}) v)
-                      [{:s entity :p attr :o v}])))
+                    (let [attr (->attr attr)]
+                      (if (and (coll? v) (not (map? v)))
+                        (map (fn [el] {:s entity :p attr :o el}) v)
+                        [{:s entity :p attr :o v}]))))
           doc)
     [{:s entity :p :kotobase/value :o doc}]))
 
