@@ -238,6 +238,23 @@
     {:size (count (:entries m)) :capacity (:capacity m)
      :hits (:hits m) :misses (:misses m)}))
 
+
+(defn db-for
+  "The materialized db for `coll-keys`, memoised when `ctx` carries BOTH a
+  `:query-memo` and a `:query-version`, and freshly built when it does not.
+
+  This is the seam a protocol handler calls instead of `query`, so that a
+  deployment able to name its state gets the memo and one that cannot still
+  works unchanged. Neither half alone is enough: a memo with no version has
+  nothing to key on, and a version with no memo has nowhere to put the result.
+
+  The caller supplying `:query-version` is asserting it changes whenever any
+  document in `coll-keys` changes. See `materialize-memo`."
+  [{:keys [query-memo query-version]} store coll-keys]
+  (if (and query-memo query-version)
+    (materialize-memo query-memo store coll-keys query-version)
+    (materialize store coll-keys)))
+
 ;; --------------------------------------------------------------------- query
 
 (defn q
