@@ -233,6 +233,36 @@
       #_:clj-kondo/ignore
       (is (thrown? #?(:clj Exception :cljs js/Error) (bridge/refs-to db "d1"))))))
 
+(deftest datoms-is-the-whole-plane-under-visible
+  (let [db (bridge/materialize (fixture-store) ["users" "departments"])
+        all (bridge/datoms db everything)]
+    (is (= (reduce + (for [[_ pm] (:spo db) [_ os] pm] (count os)))
+           (count all))
+        "every triple in the db, once")
+    (is (every? (fn [d] (= #{:s :p :o} (set (keys d)))) all))
+    (is (contains? (set all) {:s :users/u1 :p :name :o "Alice"}))))
+
+(deftest datoms-applies-visible-and-is-lazy
+  (let [db (bridge/materialize (fixture-store) ["users"])
+        no-bob? (fn [{:keys [s]}] (not= s :users/u2))
+        seen (bridge/datoms db no-bob?)]
+    (is (not-any? (fn [{:keys [s]}] (= s :users/u2)) seen)
+        "the predicate is applied to the scan, not left to the caller")
+    (is (seq? seen)
+        "lazy: the caller is reshaping every triple, so forcing a vector here
+         would hold the whole plane twice"))
+  (testing "and it refuses a missing predicate up front, like the other paths"
+    #_:clj-kondo/ignore ; deliberately wrong arity -- that's the point
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (bridge/datoms (bridge/materialize (fixture-store) ["users"]))))))
+
+(deftest datoms-agrees-with-the-fully-unbound-datalog-query
+  (testing "the scan a surface with its own engine starts from must say the
+            same thing as the Datalog frontend's unbound scan -- ADR-2608039970"
+    (let [db (bridge/materialize (fixture-store) ["users"])]
+      (is (= (into #{} (map (fn [{:keys [s p o]}] [s p o])) (bridge/datoms db everything))
+             (bridge/q db '{:find [?s ?p ?o] :where [[?s ?p ?o]]} everything))))))
+
 (deftest access-paths-agree-with-the-datalog-frontend
   (testing "the two are peers over one plane, so they must not disagree about
             what the plane says -- ADR-2608039970"
