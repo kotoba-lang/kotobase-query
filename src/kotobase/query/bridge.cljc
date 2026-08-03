@@ -111,6 +111,8 @@
   - `entity-attrs` / `by-predicate` / `by-predicate-value` / `refs-to` --
     the four covering indexes (spo/pso/pos/ocp, Datomic's EAVT/AEVT/AVET/VAET),
     each carrying `visible?`. A surface plans its own joins over these.
+  - `datoms` -- the whole plane, once, lazily. Where a surface with its own
+    engine starts: take every triple, reshape it, join it yourself.
   - `q` / `query` -- the Datalog frontend. Still supported, still the right
     choice when the caller's language IS Datalog-shaped (`datomic-client-shim`).
     It is a peer of the surfaces that skip it, not their entry point.
@@ -436,6 +438,29 @@
   (prune (into {}
                (map (fn [[p ss]] [p (visible-subjects visible? p o ss)]))
                (arr/refs-to db o))))
+
+(defn datoms
+  "Every `{:s :p :o}` in `db`, under `visible?` -- the fully-unbound scan,
+  lazy, in `:spo` order. `visible?` is REQUIRED (ns docstring).
+
+  This is the access path a surface with its own engine actually starts
+  from: it wants the whole plane once, in its own shape, and does its own
+  joins afterwards. `org-w3-sparql-protocol` is the existing example -- it
+  turns every triple into an RDF quad and hands the seq to `sparql.core`.
+
+  It was missing from the first cut of this contract (ADR-2608039970), and
+  the omission was not harmless: the one surface that needed it read
+  `(:spo db)` directly instead -- a raw index read, with nothing on the
+  supported path to apply `visible?` for it. That repo re-implemented the
+  predicate discipline itself and got it right; the next one would have had
+  to know to.
+
+  Lazy on purpose. The caller is transforming every triple into something
+  else, so forcing a vector here would hold the whole plane twice."
+  [db visible?]
+  (check-visible! visible?)
+  (filter visible?
+          (for [[s pm] (:spo db) [p os] pm o os] {:s s :p p :o o})))
 
 ;; --------------------------------------------------------------------- query
 

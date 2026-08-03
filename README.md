@@ -121,6 +121,7 @@ For a document `doc` at `(kotobase.store/-get store coll k)`:
 (bridge/by-predicate db p visible?)        ; pso / AEVT  -> {s #{o ...}}
 (bridge/by-predicate-value db p o visible?); pos / AVET  -> #{s ...}
 (bridge/refs-to db o visible?)             ; ocp / VAET  -> {p #{s ...}}
+(bridge/datoms db visible?)                ; the whole plane, lazily -> ({:s :p :o} ...)
 
 ;; q: run a Datomic-shaped :find/:where query over an already-materialized db
 ;; visible? is REQUIRED (see below) — arity 3 or arity 4 with :in inputs
@@ -159,6 +160,7 @@ and `ORDER BY`, Cypher's variable-length paths.
 |---|---|
 | `materialize` / `materialize-memo` / `db-for` | Always. Every surface goes through the shared plane. |
 | `entity-attrs` / `by-predicate` / `by-predicate-value` / `refs-to` | Your language has its own algebra — plan joins over the four indexes yourself. |
+| `datoms` | Your engine wants the whole plane once, in its own shape (`org-w3-sparql-protocol` turns every triple into an RDF quad). |
 | `q` / `query` | Your language *is* Datalog-shaped (`datomic-client-shim`). |
 
 What a surface must **not** do is give up on the datom plane and keep its
