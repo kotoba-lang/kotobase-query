@@ -149,6 +149,98 @@
                           everything ["admin"])]
     (is (= #{["Alice"] ["Carol"]} result))))
 
+;; --- access paths (ADR-2608039970) ------------------------------------------
+;; The supported contract for a surface whose algebra is not Datalog. These
+;; are `arrangement.core`'s four covering indexes with `visible?` on them --
+;; the tests that matter are the ones about `visible?`, since that is the only
+;; thing the raw index reads above do not have.
+
+(deftest entity-id-is-the-materialize-convention
+  (testing "public so a surface addressing a known document does not re-derive
+            the keyword shape and drift from materialize"
+    (let [db (bridge/materialize (fixture-store) ["users"])]
+      (is (= :users/u1 (bridge/entity-id "users" "u1")))
+      (is (contains? (:spo db) (bridge/entity-id "users" "u1"))))))
+
+(deftest access-paths-see-everything-under-a-permissive-predicate
+  (let [db (bridge/materialize (fixture-store) ["users" "departments"])]
+    (is (= {:name #{"Alice"} :role #{"admin"} :dept-key #{"d1"}
+            :tags #{"eng" "lead"}
+            :kotobase/coll #{"users"} :kotobase/key #{"u1"}}
+           (bridge/entity-attrs db :users/u1 everything))
+        "spo / EAVT")
+    (is (= {:users/u1 #{"admin"} :users/u2 #{"user"}
+            :users/u3 #{"admin"} :users/u4 #{"user"}}
+           (bridge/by-predicate db :role everything))
+        "pso / AEVT")
+    (is (= #{:users/u1 :users/u3}
+           (bridge/by-predicate-value db :role "admin" everything))
+        "pos / AVET")))
+
+(deftest by-predicate-value-is-the-foreign-key-reverse-lookup
+  (testing "who points at department d1 -- the join the worked example does by
+            hand, as one point lookup"
+    (let [db (bridge/materialize (fixture-store) ["users" "departments"])]
+      (is (= #{:users/u1 :users/u3}
+             (bridge/by-predicate-value db :dept-key "d1" everything))))))
+
+(deftest refs-to-is-empty-because-documents-hold-values-not-links
+  (testing "not a bug and not a stub: :ocp covers only objects satisfying
+            materialize's ref? (ipld.core/link?), and a document's foreign key
+            is a plain value. Asserted so the docstring cannot quietly stop
+            being true"
+    (let [db (bridge/materialize (fixture-store) ["users" "departments"])]
+      (is (= {} (bridge/refs-to db "d1" everything)))
+      (is (= {} (:ocp db))))))
+
+(deftest access-paths-apply-visible
+  (let [db (bridge/materialize (fixture-store) ["users"])
+        no-bob? (fn [{:keys [s]}] (not= s :users/u2))]
+    (is (= #{:users/u1 :users/u3} (bridge/by-predicate-value db :role "admin" no-bob?))
+        "unaffected: Bob is not an admin")
+    (is (nil? (get (bridge/by-predicate db :role no-bob?) :users/u2))
+        "Bob's :role datom is not readable through pso either")
+    (is (= {} (bridge/entity-attrs db :users/u2 no-bob?))
+        "and the whole entity is gone from spo")))
+
+(deftest an-attribute-hidden-in-full-is-dropped-not-emptied
+  (testing "an empty set under a key would answer 'this attribute exists, but
+            you may see none of its values' -- more than the caller is allowed
+            to know, and the reason these fns prune"
+    (let [db (bridge/materialize (fixture-store) ["users"])
+          no-roles? (fn [{:keys [p]}] (not= p :role))
+          attrs (bridge/entity-attrs db :users/u1 no-roles?)]
+      (is (not (contains? attrs :role)) "dropped, not present-with-an-empty-set")
+      (is (= #{"Alice"} (:name attrs)) "the rest of the entity is unaffected"))))
+
+(deftest visible-is-required-on-every-access-path
+  (testing "same discipline as q (ADR-2607050500): there is no permissive
+            default to fall back on, on any of the four.
+
+            `refs-to` is why this is an explicit check rather than a reliance
+            on the predicate being called: `:ocp` is empty, so nothing was
+            ever filtered, and the two-argument call answered `{}` with no
+            visibility decision at all. On the JVM the wrong arity is refused
+            before the body runs; under nbb/SCI it is not, so the check has to
+            be in the body -- hence the broad exception type here"
+    (let [db (bridge/materialize (fixture-store) ["users"])]
+      #_:clj-kondo/ignore ; deliberately wrong arity -- that's the point
+      (is (thrown? #?(:clj Exception :cljs js/Error) (bridge/entity-attrs db :users/u1)))
+      #_:clj-kondo/ignore
+      (is (thrown? #?(:clj Exception :cljs js/Error) (bridge/by-predicate db :role)))
+      #_:clj-kondo/ignore
+      (is (thrown? #?(:clj Exception :cljs js/Error) (bridge/by-predicate-value db :role "admin")))
+      #_:clj-kondo/ignore
+      (is (thrown? #?(:clj Exception :cljs js/Error) (bridge/refs-to db "d1"))))))
+
+(deftest access-paths-agree-with-the-datalog-frontend
+  (testing "the two are peers over one plane, so they must not disagree about
+            what the plane says -- ADR-2608039970"
+    (let [db (bridge/materialize (fixture-store) ["users"])]
+      (is (= (bridge/by-predicate-value db :role "admin" everything)
+             (into #{} (map first)
+                   (bridge/q db '{:find [?u] :where [[?u :role "admin"]]} everything)))))))
+
 ;; --- content-addressed memo (ADR-2607310900) -------------------------------
 
 (defn- seeded [n]
