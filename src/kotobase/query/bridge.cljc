@@ -87,6 +87,70 @@
   `arrangement.datalog/q`, which itself throws (arity error) if `visible?`
   is omitted -- there is no separate opt-out path to keep in sync.
 
+  ## The supported contract is `materialize` + the access paths, NOT `q`
+
+  ADR-2608039970 (`com-junkawasaki/root`). Datalog is ONE frontend over the
+  materialized datom plane, not the IR every other query language has to be
+  translated into. The datom plane (triple + content addressing) is what all
+  the surfaces share; `q`'s `:find`/`:where` grammar is not.
+
+  This was not a prediction. `org-w3-sparql-protocol` already uses
+  `materialize` and never calls `q`, and says why in its own README: it has a
+  complete SPARQL algebra of its own, so routing SPARQL through Datalog would
+  mean translating one algebra into another and back for no benefit. That
+  repo is on the SUPPORTED path, not off it. The same is true of any surface
+  whose language does not sit comfortably on Datalog's set semantics -- SQL's
+  bag semantics and ORDER BY, Cypher's variable-length paths.
+
+  So the contract is:
+
+  - `materialize` / `materialize-memo` / `db-for` -- `IStore` documents to
+    one datom plane. Shared, and the thing every surface must go through.
+  - `entity-id` -- the entity-naming convention, so a surface can address an
+    entity by `[coll k]` without hard-coding the keyword shape.
+  - `entity-attrs` / `by-predicate` / `by-predicate-value` / `refs-to` --
+    the four covering indexes (spo/pso/pos/ocp, Datomic's EAVT/AEVT/AVET/VAET),
+    each carrying `visible?`. A surface plans its own joins over these.
+  - `q` / `query` -- the Datalog frontend. Still supported, still the right
+    choice when the caller's language IS Datalog-shaped (`datomic-client-shim`).
+    It is a peer of the surfaces that skip it, not their entry point.
+
+  What a surface must NOT do is give up on the datom plane and keep its own
+  physical representation of the same documents. What is shared is the plane
+  (`materialize`), not the language (`q`) -- those are different decisions and
+  ADR-2608039970 makes opposite calls on them.
+
+  ### Why the access paths are re-exported rather than pointed at
+
+  `arrangement.core` already exports these four (they are `datalog.index`'s,
+  re-exported there). Those take no `visible?` -- they are raw index reads.
+  Re-exporting them here is what puts the ADR-2607050500 discipline on the
+  supported path: a surface that reaches past this namespace into
+  `arrangement.core/entity-attrs` is not doing something faster, it is doing
+  something with no visibility decision in it. This repo's own tests did
+  exactly that before ADR-2608039970, which is how it was noticed.
+
+  Filtering also PRUNES: an attribute whose every value is invisible is
+  dropped from the returned map rather than left as an empty set. An empty
+  set under a key would tell the caller the attribute exists while hiding
+  what it holds, which is the leak `visible?` exists to prevent.
+
+  ### `refs-to` is empty for most materialized dbs, and that is not a bug
+
+  `:ocp` is populated only for objects satisfying the `ref?` predicate
+  `materialize` asserts with, which is `arrangement.core`'s default,
+  `ipld.core/link?`. Documents materialized here carry plain EDN values, so
+  in practice nothing lands in `:ocp` and `refs-to` returns `{}`. The
+  reverse lookup a surface actually wants -- \"who points at this key?\" -- is
+  `by-predicate-value`, since a foreign key here is a VALUE (`:dept-key
+  \"d1\"`), not an IPLD link. See the worked join example above.
+
+  Making `ref?` injectable so a surface could declare its own reference
+  attributes is a real follow-up, and it is not free: `materialize-memo`'s
+  key would have to cover it, and a function is not a memo key. A
+  declarative `:ref-attrs #{...}` set would be, which is the shape to reach
+  for if this is ever needed.
+
   ## A note on `kqe`
 
   ADR-2607172300's dependency table names `kotoba-lang/kqe` alongside
@@ -148,8 +212,15 @@
           doc)
     [{:s entity :p :kotobase/value :o doc}]))
 
-(defn- entity-id
-  "The materialized entity for `[coll k]`. See ns docstring."
+(defn entity-id
+  "The materialized entity for `[coll k]` -- `(keyword (str coll) (str k))`,
+  e.g. `[\"users\" \"u1\"]` -> `:users/u1`. See the ns docstring's
+  \"Doc -> datoms mapping\".
+
+  Public because a surface addressing a known document should not have to
+  re-derive this convention: an entity id built by hand somewhere else is a
+  copy that can drift from `materialize`'s, and the failure mode is an empty
+  result rather than an error."
   [coll k]
   (keyword (str coll) (str k)))
 
@@ -283,6 +354,88 @@
   (if (and query-memo query-version)
     (materialize-memo query-memo store coll-keys query-version)
     (materialize store coll-keys)))
+
+;; -------------------------------------------------------------- access paths
+;;
+;; The four covering indexes, each carrying `visible?`. ADR-2608039970: this
+;; is the supported contract a query surface binds to when its own algebra is
+;; not Datalog -- see the ns docstring for why, and for why `refs-to` is
+;; empty on a typical materialized db.
+
+(defn- check-visible!
+  "Refuse a missing or non-callable `visible?` before reading anything.
+
+  Being CALLED is not a reliable way for the predicate to announce it is
+  missing: it is only called when the index has something to filter, and
+  `(refs-to db o)` on a db with an empty `:ocp` answered `{}` perfectly
+  cheerfully with no predicate at all. An access path that answers when it
+  was handed no visibility decision is what ADR-2607050500 forbids, and the
+  empty-index case is the worst version of it -- the answer looks fine."
+  [visible?]
+  (when-not (ifn? visible?)
+    (throw (ex-info (str "visible? is required (ADR-2607050500) -- pass "
+                         "(constantly true) to see everything materialized")
+                    {:kotobase.query/error :missing-visible-predicate}))))
+
+(defn- visible-objects
+  "The `os` an entity `s` still shows under predicate `p`."
+  [visible? s p os]
+  (into #{} (filter (fn [o] (visible? {:s s :p p :o o}))) os))
+
+(defn- visible-subjects
+  "The `ss` still holding `[s p o]` for a fixed `p`/`o`."
+  [visible? p o ss]
+  (into #{} (filter (fn [s] (visible? {:s s :p p :o o}))) ss))
+
+(defn- prune
+  "Drop entries whose value set came back empty. See the ns docstring: an
+  empty set under a key answers \"this exists, but you may see none of it\",
+  which is more than the caller is allowed to know."
+  [m]
+  (into {} (remove (comp empty? val)) m))
+
+(defn entity-attrs
+  "All `{p #{o ...}}` for subject `s`, under `visible?` -- spo, Datomic's
+  EAVT. `visible?` is REQUIRED (ns docstring)."
+  [db s visible?]
+  (check-visible! visible?)
+  (prune (into {}
+               (map (fn [[p os]] [p (visible-objects visible? s p os)]))
+               (arr/entity-attrs db s))))
+
+(defn by-predicate
+  "All `{s #{o ...}}` for predicate `p`, under `visible?` -- pso, Datomic's
+  AEVT scan. `visible?` is REQUIRED (ns docstring)."
+  [db p visible?]
+  (check-visible! visible?)
+  (prune (into {}
+               (map (fn [[s os]] [s (visible-objects visible? s p os)]))
+               (arr/by-predicate db p))))
+
+(defn by-predicate-value
+  "The subjects `s` where `[s p o]` holds, under `visible?` -- pos, Datomic's
+  AVET point lookup. `visible?` is REQUIRED (ns docstring).
+
+  This is the reverse lookup a surface materialized from documents actually
+  wants: a foreign key here is a value (`:dept-key \"d1\"`), so \"who points at
+  d1?\" is `(by-predicate-value db :dept-key \"d1\" visible?)`, not `refs-to`."
+  [db p o visible?]
+  (check-visible! visible?)
+  (visible-subjects visible? p o (arr/by-predicate-value db p o)))
+
+(defn refs-to
+  "All `{p #{s ...}}` referencing object `o`, under `visible?` -- ocp,
+  Datomic's VAET. `visible?` is REQUIRED (ns docstring).
+
+  Returns `{}` on a typical materialized db, and that is a property of the
+  data rather than of this function: `:ocp` covers only objects satisfying
+  `materialize`'s `ref?` (`ipld.core/link?`), and documents carry plain EDN.
+  Use `by-predicate-value`. See the ns docstring."
+  [db o visible?]
+  (check-visible! visible?)
+  (prune (into {}
+               (map (fn [[p ss]] [p (visible-subjects visible? p o ss)]))
+               (arr/refs-to db o))))
 
 ;; --------------------------------------------------------------------- query
 

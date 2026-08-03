@@ -113,6 +113,15 @@ For a document `doc` at `(kotobase.store/-get store coll k)`:
 ;; materialize: IStore + collection keys -> one combined arrangement db
 (bridge/materialize store coll-keys)
 
+;; entity-id: the [coll k] -> entity convention materialize uses
+(bridge/entity-id "users" "u1")            ;=> :users/u1
+
+;; access paths: the four covering indexes, each carrying visible?
+(bridge/entity-attrs db s visible?)        ; spo / EAVT  -> {p #{o ...}}
+(bridge/by-predicate db p visible?)        ; pso / AEVT  -> {s #{o ...}}
+(bridge/by-predicate-value db p o visible?); pos / AVET  -> #{s ...}
+(bridge/refs-to db o visible?)             ; ocp / VAET  -> {p #{s ...}}
+
 ;; q: run a Datomic-shaped :find/:where query over an already-materialized db
 ;; visible? is REQUIRED (see below) — arity 3 or arity 4 with :in inputs
 (bridge/q db query visible?)
@@ -129,6 +138,55 @@ already enforce (ADR-2607050500, "Query as first-class effect" in
 `com-junkawasaki/root` — no permissive default to silently fall back on).
 Pass `(constantly true)` to see everything materialized; that is a
 caller's explicit choice, never this bridge's default.
+
+### The supported contract is `materialize` + the access paths, not `q`
+
+**ADR-2608039970** (`com-junkawasaki/root`). Datalog is *one frontend* over
+the materialized datom plane, not the IR every other query language has to
+be translated into. What the surfaces share is the plane (triple + content
+addressing); `q`'s `:find`/`:where` grammar is not part of that.
+
+This is not a prediction — it is already how the surfaces are built.
+[`org-w3-sparql-protocol`](https://github.com/kotoba-lang/org-w3-sparql-protocol)
+uses `materialize` and never calls `q`, and says why in its own README: it
+has a complete SPARQL algebra already, so routing SPARQL through Datalog
+would translate one algebra into another and back for no benefit. **That
+repo is on the supported path, not off it.** The same applies to any surface
+whose language does not sit on Datalog's set semantics — SQL's bag semantics
+and `ORDER BY`, Cypher's variable-length paths.
+
+| Use | When |
+|---|---|
+| `materialize` / `materialize-memo` / `db-for` | Always. Every surface goes through the shared plane. |
+| `entity-attrs` / `by-predicate` / `by-predicate-value` / `refs-to` | Your language has its own algebra — plan joins over the four indexes yourself. |
+| `q` / `query` | Your language *is* Datalog-shaped (`datomic-client-shim`). |
+
+What a surface must **not** do is give up on the datom plane and keep its
+own physical representation of the same documents. Sharing the plane and
+sharing the language are different decisions, and ADR-2608039970 makes
+opposite calls on them.
+
+**Why re-export rather than point at `arrangement.core`?** Those four exist
+there already (they are `datalog.index`'s), but they take no `visible?` —
+they are raw index reads. Re-exporting them here is what puts the
+ADR-2607050500 discipline on the supported path. Reaching past this
+namespace into `arrangement.core/entity-attrs` is not faster, it is a read
+with no visibility decision in it. This repo's own tests did exactly that
+before ADR-2608039970, which is how it was noticed.
+
+The access paths also **prune**: an attribute whose every value is invisible
+is dropped from the returned map rather than returned as an empty set. An
+empty set under a key answers *"this exists, but you may see none of it"* —
+more than the caller is allowed to know.
+
+**`refs-to` returns `{}` on a typical materialized db, and that is a
+property of the data, not a stub.** `:ocp` covers only objects satisfying
+`materialize`'s `ref?` (`ipld.core/link?`), and documents carry plain EDN.
+A foreign key here is a *value* (`:dept-key "d1"`), so the reverse lookup
+you want is `(bridge/by-predicate-value db :dept-key "d1" visible?)`.
+Making `ref?` injectable is a real follow-up and not free: `materialize-memo`'s
+key would have to cover it, and a function is not a memo key — a declarative
+`:ref-attrs #{...}` set would be.
 
 ### Worked example (equality filter + cross-collection join)
 
